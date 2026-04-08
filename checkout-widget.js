@@ -340,59 +340,94 @@
   // ══════════════════════════════════════════════════════════════════════════
   // AUTO-INTERCEPT HubSpot CTA buttons on the pricing page
   // ══════════════════════════════════════════════════════════════════════════
-  // HubSpot CTA links contain webInteractiveContentId as a URL parameter.
-  // We match paid-plan CTAs by their known IDs and replace the click handler.
-  // Trial and Enterprise/Free CTAs are left untouched.
+  // Strategy: find every CTA link (a[href*="/hs/cta/"]), then walk up the DOM
+  // to find the pricing card container. Read the card's text to determine
+  // which plan it belongs to. Intercept only the three paid plans.
   // ══════════════════════════════════════════════════════════════════════════
+
+  // Map card heading text → plan ID
+  var PLAN_TEXT_MAP = [
+    { match: /academic\s*pro/i,  plan: 'academic-pro' },
+    { match: /academic\s*team/i, plan: 'academic-team' },
+    { match: /professional/i,    plan: 'professional' },
+  ];
+
+  function getCardText(element) {
+    // Walk up from the link to find a container that holds the plan name.
+    // Pricing cards are typically in a column/cell — look for a parent that
+    // contains one of our plan names in its text content.
+    var el = element;
+    for (var i = 0; i < 15; i++) {
+      el = el.parentElement;
+      if (!el) break;
+      var text = el.textContent || '';
+      for (var j = 0; j < PLAN_TEXT_MAP.length; j++) {
+        if (PLAN_TEXT_MAP[j].match.test(text)) {
+          // Make sure this container doesn't ALSO contain other plan names
+          // (if it does, we're too high up — keep looking at a narrower scope)
+          var matchCount = 0;
+          for (var k = 0; k < PLAN_TEXT_MAP.length; k++) {
+            if (PLAN_TEXT_MAP[k].match.test(text)) matchCount++;
+          }
+          if (matchCount === 1) {
+            return PLAN_TEXT_MAP[j].plan;
+          }
+        }
+      }
+    }
+    return null;
+  }
 
   function interceptCTAs() {
     var intercepted = 0;
+    var already = {};  // prevent double-intercepting
 
-    // HubSpot CTAs render as <a> inside .hs-cta-wrapper, or as direct links
-    // containing /hs/cta/ in the href. We check all links on the page.
-    document.querySelectorAll('a[href]').forEach(function (link) {
-      var href = link.getAttribute('href') || '';
+    // Find ALL links that go to HubSpot CTA redirects
+    document.querySelectorAll('a[href*="/hs/cta/"], a[href*="hs/cta"], a.cta_button').forEach(function (link) {
+      // Skip if already intercepted
+      if (link.dataset.daIntercepted) return;
 
-      // Check if this is a HubSpot CTA link
-      if (href.indexOf('/hs/cta/') === -1 && href.indexOf('hs/cta') === -1) return;
+      // Determine which plan this button belongs to
+      var planId = getCardText(link);
+      if (!planId) return;  // Not a paid plan card — leave it
+      if (already[planId]) return;  // Already got this plan's button
 
-      // Extract webInteractiveContentId from the URL
-      var match = href.match(/webInteractiveContentId=(\d+)/);
-      if (!match) return;
-
-      var ctaId = match[1];
-      var planId = CTA_MAP[ctaId];
-      if (!planId) return; // Not a paid plan CTA — leave it alone
-
-      // Replace the link behavior
+      // Intercept the click
       link.addEventListener('click', function (e) {
         e.preventDefault();
         e.stopPropagation();
+        e.stopImmediatePropagation();
         openCheckout(planId, 'annual');
-      }, true); // useCapture to beat HubSpot's own handlers
+        return false;
+      }, true); // useCapture to fire before HubSpot's handlers
 
-      // Also block the href navigation as a fallback
+      // Block the href as fallback
       link.setAttribute('href', 'javascript:void(0)');
+      link.dataset.daIntercepted = 'true';
 
+      already[planId] = true;
       intercepted++;
+      console.log('DiseaseAtlas: Intercepted "Get" button for ' + planId);
     });
 
     return intercepted;
   }
 
-  // HubSpot CTA buttons load asynchronously (they're injected by hs-cta JS).
-  // We poll briefly until we find them, then stop.
+  // HubSpot CTA buttons may load asynchronously.
+  // Poll until we find all 3 paid-plan buttons (or give up after 20s).
   var attempts = 0;
-  var maxAttempts = 40; // 40 × 500ms = 20 seconds max wait
+  var maxAttempts = 40; // 40 × 500ms = 20 seconds
+  var totalFound = 0;
   var pollTimer = setInterval(function () {
     attempts++;
     var found = interceptCTAs();
-    if (found > 0 || attempts >= maxAttempts) {
+    totalFound += found;
+    if (totalFound >= 3 || attempts >= maxAttempts) {
       clearInterval(pollTimer);
-      if (found > 0) {
-        console.log('DiseaseAtlas: Intercepted ' + found + ' paid-plan CTA button(s)');
+      if (totalFound > 0) {
+        console.log('DiseaseAtlas: Total intercepted: ' + totalFound + ' button(s)');
       } else {
-        console.warn('DiseaseAtlas: No paid-plan CTA buttons found after ' + maxAttempts + ' attempts');
+        console.warn('DiseaseAtlas: No paid-plan CTA buttons found after ' + maxAttempts + ' attempts. Check page structure.');
       }
     }
   }, 500);
