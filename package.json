@@ -1,0 +1,13 @@
+{
+  "name": "mollie-hubspot-backend-v4",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Disease Atlas payment backend — Mollie checkout + HubSpot CRM integration",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "@mollie/api-client": "^4.0.0",
+    "@hubspot/api-client": "^12.0.0"
+  }
+}
