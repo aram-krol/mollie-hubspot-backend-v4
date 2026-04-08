@@ -4,6 +4,14 @@
     "api/*.js": {
       "maxDuration": 10
     }
-  }
+  },
+  "headers": [
+    {
+      "source": "/checkout-widget.js",
+      "headers": [
+        { "key": "Access-Control-Allow-Origin", "value": "*" },
+        { "key": "Cache-Control", "value": "public, max-age=3600, s-maxage=3600, stale-while-revalidate=86400" }
+      ]
+    }
+  ]
 }
-
