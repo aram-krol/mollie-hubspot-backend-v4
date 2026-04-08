@@ -382,8 +382,11 @@
     var intercepted = 0;
     var already = {};  // prevent double-intercepting
 
-    // Find ALL links that go to HubSpot CTA redirects
-    document.querySelectorAll('a[href*="/hs/cta/"], a[href*="hs/cta"], a.cta_button').forEach(function (link) {
+    // Find ALL links that go to HubSpot CTA redirects.
+    // HubSpot CTA buttons render as <a> tags pointing to:
+    //   https://cta-eu1.hubspot.com/web-interactives/public/v1/track/click?encryptedPayload=...
+    // We also check for older /hs/cta/ patterns and .cta_button class as fallbacks.
+    document.querySelectorAll('a[href*="hubspot.com/web-interactives"], a[href*="/hs/cta/"], a.cta_button').forEach(function (link) {
       // Skip if already intercepted
       if (link.dataset.daIntercepted) return;
 
