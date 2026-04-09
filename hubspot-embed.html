@@ -1,0 +1,114 @@
+<script>
+// Disease Atlas Checkout Widget — HubSpot Footer HTML embed v4
+// Intercepts a.interactive-button elements by webInteractiveContentId
+(function(){
+'use strict';
+var API='https://mollie-hubspot-backend-v4.vercel.app/api/create-checkout';
+
+// Map webInteractiveContentId → plan ID
+var CTA_PLAN_MAP={
+  '303294447857':'academic-pro',
+  '303310463213':'academic-team',
+  '303989590263':'professional'
+};
+
+var EUR_COUNTRIES=['NL','DE','FR','BE','AT','IT','ES','PT','IE','FI','SE','DK','PL','CZ','SK','HU','RO','BG','HR','SI','LT','LV','EE','CY','MT','LU','GR','GB','CH','NO','IS','LI','AL','BA','ME','MK','RS','XK','MD','UA','BY'];
+var EU=['NL','DE','FR','BE','AT','IT','ES','PT','IE','FI','SE','DK','PL','CZ','SK','HU','RO','BG','HR','SI','LT','LV','EE','CY','MT','LU','GR'];
+var PLANS={'academic-pro':{label:'Academic Pro',monthly:{EUR:135,USD:150},annual:{EUR:1200,USD:1320}},'academic-team':{label:'Academic Team',monthly:{EUR:270,USD:300},annual:{EUR:2400,USD:2640}},'professional':{label:'Professional',monthly:{EUR:400,USD:440},annual:{EUR:3600,USD:3960}}};
+var COUNTRIES=[{code:'AF',name:'Afghanistan'},{code:'AL',name:'Albania'},{code:'DZ',name:'Algeria'},{code:'AR',name:'Argentina'},{code:'AT',name:'Austria'},{code:'AU',name:'Australia'},{code:'BE',name:'Belgium'},{code:'BG',name:'Bulgaria'},{code:'BR',name:'Brazil'},{code:'BY',name:'Belarus'},{code:'CA',name:'Canada'},{code:'CH',name:'Switzerland'},{code:'CN',name:'China'},{code:'CY',name:'Cyprus'},{code:'CZ',name:'Czech Republic'},{code:'DE',name:'Germany'},{code:'DK',name:'Denmark'},{code:'EE',name:'Estonia'},{code:'EG',name:'Egypt'},{code:'ES',name:'Spain'},{code:'FI',name:'Finland'},{code:'FR',name:'France'},{code:'GB',name:'United Kingdom'},{code:'GR',name:'Greece'},{code:'HR',name:'Croatia'},{code:'HU',name:'Hungary'},{code:'ID',name:'Indonesia'},{code:'IE',name:'Ireland'},{code:'IL',name:'Israel'},{code:'IN',name:'India'},{code:'IS',name:'Iceland'},{code:'IT',name:'Italy'},{code:'JP',name:'Japan'},{code:'KR',name:'South Korea'},{code:'LI',name:'Liechtenstein'},{code:'LT',name:'Lithuania'},{code:'LU',name:'Luxembourg'},{code:'LV',name:'Latvia'},{code:'ME',name:'Montenegro'},{code:'MK',name:'North Macedonia'},{code:'MT',name:'Malta'},{code:'MX',name:'Mexico'},{code:'MY',name:'Malaysia'},{code:'NL',name:'Netherlands'},{code:'NO',name:'Norway'},{code:'NZ',name:'New Zealand'},{code:'PH',name:'Philippines'},{code:'PL',name:'Poland'},{code:'PT',name:'Portugal'},{code:'RO',name:'Romania'},{code:'RS',name:'Serbia'},{code:'RU',name:'Russia'},{code:'SA',name:'Saudi Arabia'},{code:'SE',name:'Sweden'},{code:'SG',name:'Singapore'},{code:'SI',name:'Slovenia'},{code:'SK',name:'Slovakia'},{code:'TH',name:'Thailand'},{code:'TR',name:'Turkey'},{code:'TW',name:'Taiwan'},{code:'UA',name:'Ukraine'},{code:'US',name:'United States'},{code:'ZA',name:'South Africa'}];
+var selPlan=null,selInt='annual';
+
+// ── CSS ──
+var s=document.createElement('style');
+s.textContent='.da-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:10000;justify-content:center;align-items:center}.da-overlay.active{display:flex}.da-modal{background:#fff;border-radius:12px;padding:32px;max-width:480px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,0.3);font-family:Inter,-apple-system,sans-serif;max-height:90vh;overflow-y:auto;position:relative}.da-modal h2{margin:0 0 4px;font-size:22px;color:#1a1a2e}.da-modal .da-sub{margin:0 0 16px;font-size:15px;color:#666}.da-itog{display:flex;background:#f0f4ff;border-radius:8px;padding:4px;margin-bottom:16px}.da-itog button{flex:1;padding:10px 8px;border:none;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer;background:transparent;color:#666;transition:all .2s}.da-itog button.active{background:#fff;color:#1a1a2e;box-shadow:0 1px 3px rgba(0,0,0,0.1)}.da-itog button:hover:not(.active){color:#333}.da-badge{display:inline-block;background:#22c55e;color:#fff;font-size:11px;font-weight:700;padding:1px 6px;border-radius:10px;margin-left:6px;vertical-align:middle}.da-price{background:#f0f4ff;border-radius:8px;padding:12px 16px;margin-bottom:20px;font-size:14px;color:#333}.da-price strong{font-size:20px;color:#1a1a2e}.da-modal label{display:block;font-size:13px;font-weight:600;color:#444;margin-bottom:4px}.da-modal input,.da-modal select{width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:6px;font-size:14px;margin-bottom:14px;box-sizing:border-box;transition:border-color .2s}.da-modal input:focus,.da-modal select:focus{outline:none;border-color:#4a6cf7}.da-row{display:flex;gap:12px}.da-row>div{flex:1}.da-vat{display:none}.da-vat.visible{display:block}.da-btn{width:100%;padding:14px;background:#4a6cf7;color:#fff;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer;transition:background .2s}.da-btn:hover{background:#3a5ce5}.da-btn:disabled{background:#aaa;cursor:not-allowed}.da-x{position:absolute;top:12px;right:16px;background:none;border:none;font-size:24px;color:#999;cursor:pointer;line-height:1}.da-x:hover{color:#333}.da-err{background:#fef2f2;color:#991b1b;padding:10px 14px;border-radius:6px;font-size:13px;margin-bottom:14px;display:none}.da-err.visible{display:block}.da-terms{font-size:12px;color:#888;margin-top:12px;text-align:center}.da-terms a{color:#4a6cf7}.da-spin{display:inline-block;width:18px;height:18px;border:2px solid #fff;border-top-color:transparent;border-radius:50%;animation:daspin .6s linear infinite;vertical-align:middle;margin-right:8px}@keyframes daspin{to{transform:rotate(360deg)}}';
+document.head.appendChild(s);
+
+// ── Modal HTML ──
+var ov=document.createElement('div');ov.className='da-overlay';
+ov.innerHTML='<div class="da-modal"><button class="da-x" id="da-close">&times;</button><h2 id="da-title">Subscribe</h2><p class="da-sub" id="da-sub"></p><div class="da-itog" id="da-itog"><button type="button" data-interval="annual" class="active">Annual <span class="da-badge">Save 25%</span></button><button type="button" data-interval="monthly">Monthly</button></div><div class="da-price" id="da-price"></div><div class="da-err" id="da-err"></div><form id="da-form" autocomplete="on"><div class="da-row"><div><label for="da-fn">First name *</label><input type="text" id="da-fn" name="firstname" required autocomplete="given-name"></div><div><label for="da-ln">Last name</label><input type="text" id="da-ln" name="lastname" autocomplete="family-name"></div></div><label for="da-em">Work email *</label><input type="email" id="da-em" name="email" required autocomplete="email"><label for="da-co">Organization</label><input type="text" id="da-co" name="company" autocomplete="organization"><label for="da-ct">Country *</label><select id="da-ct" name="country" required><option value="">Select your country...</option></select><div class="da-vat" id="da-vat"><label for="da-vi">EU VAT ID (optional, for reverse charge)</label><input type="text" id="da-vi" name="vat_id" placeholder="e.g. NL123456789B01" autocomplete="off"></div><button type="submit" class="da-btn" id="da-go">Proceed to payment</button></form><p class="da-terms">By proceeding you agree to our <a href="/terms" target="_blank">Terms of Service</a>. Payments processed securely by Mollie.</p></div>';
+document.body.appendChild(ov);
+
+// ── Populate countries ──
+var cs=document.getElementById('da-ct');
+COUNTRIES.forEach(function(c){var o=document.createElement('option');o.value=c.code;o.textContent=c.name;cs.appendChild(o)});
+
+// ── Interval toggle ──
+document.getElementById('da-itog').addEventListener('click',function(e){var b=e.target.closest('button[data-interval]');if(!b)return;selInt=b.dataset.interval;this.querySelectorAll('button').forEach(function(x){x.classList.remove('active')});b.classList.add('active');upPrice(cs.value)});
+
+// ── Country change ──
+cs.addEventListener('change',function(){var c=this.value.toUpperCase();document.getElementById('da-vat').classList.toggle('visible',EU.indexOf(c)!==-1);upPrice(c)});
+
+function upPrice(cc){var cur=EUR_COUNTRIES.indexOf((cc||'').toUpperCase())!==-1?'EUR':'USD';var sym=cur==='EUR'?'\u20AC':'$';var p=PLANS[selPlan];if(!p)return;var pr=p[selInt]?p[selInt][cur]:null;if(!pr)return;var per=selInt==='monthly'?'/month':'/year';document.getElementById('da-price').innerHTML='<strong>'+sym+pr.toLocaleString()+'</strong>'+per+' \u2014 '+p.label+(cur==='USD'?'<br><small>Prices in USD for non-European countries</small>':'')}
+
+function openCheckout(planId,interval,prefill){selPlan=planId;selInt=interval||'annual';var p=PLANS[planId];if(!p)return;document.getElementById('da-title').textContent='Get '+p.label;document.getElementById('da-sub').textContent='Choose your billing cycle and complete your details below.';document.querySelectorAll('#da-itog button').forEach(function(b){b.classList.toggle('active',b.dataset.interval===selInt)});
+// Pre-fill form fields if provided (for platform integration)
+if(prefill){if(prefill.email)document.getElementById('da-em').value=prefill.email;if(prefill.firstName)document.getElementById('da-fn').value=prefill.firstName;if(prefill.lastName)document.getElementById('da-ln').value=prefill.lastName;if(prefill.company)document.getElementById('da-co').value=prefill.company;if(prefill.country){cs.value=prefill.country;cs.dispatchEvent(new Event('change'))}}
+upPrice(cs.value||'NL');document.getElementById('da-err').classList.remove('visible');document.getElementById('da-go').disabled=false;document.getElementById('da-go').innerHTML='Proceed to payment';ov.classList.add('active')}
+
+// ── Close modal ──
+document.getElementById('da-close').addEventListener('click',function(){ov.classList.remove('active')});
+ov.addEventListener('click',function(e){if(e.target===ov)ov.classList.remove('active')});
+document.addEventListener('keydown',function(e){if(e.key==='Escape')ov.classList.remove('active')});
+
+// ── Form submit ──
+document.getElementById('da-form').addEventListener('submit',async function(e){e.preventDefault();var err=document.getElementById('da-err'),btn=document.getElementById('da-go');err.classList.remove('visible');var em=document.getElementById('da-em').value.trim(),fn=document.getElementById('da-fn').value.trim(),ln=document.getElementById('da-ln').value.trim(),co=document.getElementById('da-co').value.trim(),ct=document.getElementById('da-ct').value,vi=document.getElementById('da-vi').value.trim();if(!em||!fn||!ct){err.textContent='Please fill in all required fields.';err.classList.add('visible');return}btn.disabled=true;btn.innerHTML='<span class="da-spin"></span>Redirecting to payment...';try{var r=await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan:selPlan,interval:selInt,email:em,firstName:fn,lastName:ln,company:co,country:ct,vatId:vi})});var d=await r.json();if(!r.ok)throw new Error(d.error||'Something went wrong.');window.location.href=d.checkoutUrl}catch(x){btn.disabled=false;btn.innerHTML='Proceed to payment';err.textContent=x.message||'Something went wrong. Please try again.';err.classList.add('visible')}});
+
+window.DiseaseAtlasCheckout={open:openCheckout};
+
+// ══════════════════════════════════════════════════════════════════════
+// INTERCEPT: find a.interactive-button, extract plan from URL, replace
+// ══════════════════════════════════════════════════════════════════════
+
+function getPlanFromHref(href){
+  var ids=Object.keys(CTA_PLAN_MAP);
+  for(var i=0;i<ids.length;i++){
+    if(href.indexOf('webInteractiveContentId='+ids[i])!==-1) return CTA_PLAN_MAP[ids[i]];
+  }
+  return null;
+}
+
+function interceptCTAs(){
+  var count=0;
+  document.querySelectorAll('a.interactive-button').forEach(function(link){
+    if(link.dataset.daHijacked) return;
+    var plan=getPlanFromHref(link.href||link.getAttribute('href')||'');
+    if(!plan) return; // Trial or Enterprise — skip
+
+    // Completely neuter the link
+    link.removeAttribute('href');
+    link.removeAttribute('data-container-navigation-controller');
+    link.style.cursor='pointer';
+
+    // Block ALL event types that could cause navigation
+    ['click','mousedown','mouseup','pointerdown','pointerup','touchstart'].forEach(function(evt){
+      link.addEventListener(evt,function(e){
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        if(evt==='click') openCheckout(plan,'annual');
+      },true);
+    });
+
+    link.dataset.daHijacked='true';
+    count++;
+    console.log('DiseaseAtlas: Hijacked CTA for '+plan);
+  });
+  return count;
+}
+
+// Poll for CTA buttons (they load async)
+var att=0,tot=0;
+var tmr=setInterval(function(){
+  att++;
+  tot+=interceptCTAs();
+  if(tot>=3||att>=40){clearInterval(tmr);console.log('DiseaseAtlas: Hijacked '+tot+' CTA(s)');}
+},500);
+
+// Re-intercept if HubSpot re-renders buttons
+if(typeof MutationObserver!=='undefined'){
+  new MutationObserver(function(){interceptCTAs()}).observe(document.body,{childList:true,subtree:true});
+}
+
+console.log('DiseaseAtlas: Checkout widget v4 loaded');
+})();
+</script>

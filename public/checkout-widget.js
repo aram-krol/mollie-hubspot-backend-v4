@@ -245,7 +245,7 @@
   }
 
   // ── Open modal ──
-  function openCheckout(planId, interval) {
+  function openCheckout(planId, interval, prefill) {
     selectedPlan = planId;
     selectedInterval = interval || 'annual';
     const plan = PLANS[planId];
@@ -259,6 +259,18 @@
     document.querySelectorAll('#da-interval-toggle button').forEach(function (btn) {
       btn.classList.toggle('active', btn.dataset.interval === selectedInterval);
     });
+
+    // Pre-fill form fields if provided (for platform integration at ask.euretos.com)
+    if (prefill) {
+      if (prefill.email) document.getElementById('da-email').value = prefill.email;
+      if (prefill.firstName) document.getElementById('da-firstname').value = prefill.firstName;
+      if (prefill.lastName) document.getElementById('da-lastname').value = prefill.lastName;
+      if (prefill.company) document.getElementById('da-company').value = prefill.company;
+      if (prefill.country) {
+        countrySelect.value = prefill.country;
+        countrySelect.dispatchEvent(new Event('change'));
+      }
+    }
 
     // Set initial price (default to EUR until country is selected)
     updatePriceSummary(countrySelect.value || 'NL');

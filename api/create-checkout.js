@@ -46,6 +46,7 @@ const EUR_COUNTRIES = [
 const ALLOWED_ORIGINS = [
   'https://www.euretos.com',
   'https://euretos.com',
+  'https://ask.euretos.com',
 ];
 
 // HubSpot SaaS Billing pipeline stage IDs
