@@ -17,6 +17,9 @@ const hubspot = require('@hubspot/api-client');
 const mollieClient = createMollieClient({ apiKey: process.env.MOLLIE_API_KEY });
 const hubspotClient = new hubspot.Client({ accessToken: process.env.HUBSPOT_PRIVATE_APP_TOKEN });
 
+// Euretos company record in HubSpot — stores the invoice counter
+const EURETOS_COMPANY_ID = process.env.EURETOS_COMPANY_ID || ''; // Set in Vercel env vars
+
 // HubSpot SaaS Billing pipeline stage IDs
 const STAGES = {
   AWAITING_PAYMENT: '3912561851',
@@ -88,6 +91,42 @@ module.exports = async function handler(req, res) {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Invoice Number Generation
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function generateInvoiceNumber() {
+  // Read current counter from the Euretos company record, increment, write back
+  // Format: DA-YYYY-NNNN (e.g., DA-2026-0001)
+  if (!EURETOS_COMPANY_ID) {
+    console.warn('EURETOS_COMPANY_ID not set — skipping invoice number generation');
+    return null;
+  }
+
+  try {
+    const company = await hubspotClient.crm.companies.basicApi.getById(
+      EURETOS_COMPANY_ID,
+      ['last_invoice_number']
+    );
+
+    const lastNumber = parseInt(company.properties.last_invoice_number || '0', 10);
+    const nextNumber = lastNumber + 1;
+    const year = new Date().getFullYear();
+    const invoiceNumber = `DA-${year}-${String(nextNumber).padStart(4, '0')}`;
+
+    // Write incremented counter back to company record
+    await hubspotClient.crm.companies.basicApi.update(EURETOS_COMPANY_ID, {
+      properties: { last_invoice_number: String(nextNumber) },
+    });
+
+    console.log(`Invoice number generated: ${invoiceNumber} (counter: ${nextNumber})`);
+    return invoiceNumber;
+  } catch (err) {
+    console.error('Failed to generate invoice number:', err.message);
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Payment Paid
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -101,13 +140,19 @@ async function handlePaid(payment, metadata) {
     // Update contact tracking properties — HubSpot WF2 sends receipt email
     console.log(`Recurring payment ${payment.id} paid for deal ${dealId}`);
 
+    // Generate invoice number for the renewal
+    const invoiceNumber = await generateInvoiceNumber();
+
     try {
+      const contactProps = {
+        last_subscription_payment_date: today,
+        last_mollie_payment_id: payment.id,
+        needs_payment_retry: 'false',
+      };
+      if (invoiceNumber) contactProps.last_invoice_number = invoiceNumber;
+
       await hubspotClient.crm.contacts.basicApi.update(contactId, {
-        properties: {
-          last_subscription_payment_date: today,
-          last_mollie_payment_id: payment.id,
-          needs_payment_retry: 'false',
-        },
+        properties: contactProps,
       });
     } catch (err) {
       console.error(`Failed to update contact ${contactId} for recurring payment:`, err.message);
@@ -132,14 +177,20 @@ async function handlePaid(payment, metadata) {
     };
     const paymentMethod = methodMap[payment.method] || 'other';
 
-    // Update deal: mark as paid
+    // Generate invoice number
+    const invoiceNumber = await generateInvoiceNumber();
+
+    // Update deal: mark as paid + set invoice number
     try {
+      const dealProps = {
+        payment_status: 'paid',
+        initial_payment_date: today,
+        deal_payment_method: paymentMethod,
+      };
+      if (invoiceNumber) dealProps.invoice_number = invoiceNumber;
+
       await hubspotClient.crm.deals.basicApi.update(dealId, {
-        properties: {
-          payment_status: 'paid',
-          initial_payment_date: today,
-          deal_payment_method: paymentMethod,
-        },
+        properties: dealProps,
       });
     } catch (err) {
       console.error(`Failed to update deal ${dealId}:`, err.message);
