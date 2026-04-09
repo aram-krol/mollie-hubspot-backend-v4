@@ -24,12 +24,12 @@ const PRICE_TABLE = {
   'professional':  { monthly: { EUR: '400.00', USD: '440.00' }, annual: { EUR: '3600.00', USD: '3960.00' } },
 };
 
-// EU standard VAT rates (update ~1x per year when rates change)
+// EU standard VAT rates — updated 2026-04-10 (source: taxfoundation.org)
 const EU_VAT_RATES = {
   NL: 21, DE: 19, FR: 20, BE: 21, AT: 20, IT: 22, ES: 21,
-  PT: 23, IE: 23, FI: 24, SE: 25, DK: 25, PL: 23, CZ: 21,
-  SK: 20, HU: 27, RO: 19, BG: 20, HR: 25, SI: 22, LT: 21,
-  LV: 21, EE: 22, CY: 19, MT: 18, LU: 17, GR: 24,
+  PT: 23, IE: 23, FI: 25.5, SE: 25, DK: 25, PL: 23, CZ: 21,
+  SK: 23, HU: 27, RO: 21, BG: 20, HR: 25, SI: 22, LT: 21,
+  LV: 21, EE: 24, CY: 19, MT: 18, LU: 17, GR: 24,
 };
 
 const EU_COUNTRIES = Object.keys(EU_VAT_RATES);
