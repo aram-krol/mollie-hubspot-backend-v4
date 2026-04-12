@@ -5,11 +5,13 @@
 // CRITICAL: Always verifies payment by calling back to Mollie API — never trusts POST body.
 //
 // Handles both:
-//   - First payments (from create-checkout): updates deal, creates subscription if needed
-//   - Recurring payments (from active subscriptions): updates contact payment tracking
+//   - First payments (from create-checkout): updates deal, creates subscription,
+//     creates HubSpot invoice, sets platform access, triggers confirmation email
+//   - Recurring payments (from active subscriptions): extends expiration,
+//     creates renewal invoice, updates contact tracking
 //
 // Design doc: wiki/architecture/direct-checkout-implementation.md
-// HubSpot property map: wiki/architecture/hubspot-workflows.md
+// WF1 spec: "WF1 - Payment Result Workflow Spec.md"
 
 const { createMollieClient } = require('@mollie/api-client');
 const hubspot = require('@hubspot/api-client');
@@ -17,8 +19,9 @@ const hubspot = require('@hubspot/api-client');
 const mollieClient = createMollieClient({ apiKey: process.env.MOLLIE_API_KEY });
 const hubspotClient = new hubspot.Client({ accessToken: process.env.HUBSPOT_PRIVATE_APP_TOKEN });
 
-// Euretos company record in HubSpot — stores the invoice counter
-const EURETOS_COMPANY_ID = process.env.EURETOS_COMPANY_ID || ''; // Set in Vercel env vars
+// ─────────────────────────────────────────────────────────────────────────────
+// Configuration
+// ─────────────────────────────────────────────────────────────────────────────
 
 // HubSpot SaaS Billing pipeline stage IDs
 const STAGES = {
@@ -33,6 +36,45 @@ const SUBSCRIPTION_INTERVALS = {
   monthly: '1 month',
   annual: '12 months',
 };
+
+// Plan → Cerebrum subscription type mapping
+// academic-pro = individual researcher, academic-team + professional = collaborative (shared folders)
+const PLAN_TO_SUBSCRIPTION_TYPE = {
+  'academic-pro': 'Academic',
+  'academic-team': 'Corporate',
+  'professional': 'Corporate',
+};
+
+// HubSpot product IDs for invoice line items
+// Each product has both EUR and USD pricing — HubSpot uses the invoice currency to pick the right price
+const PRODUCT_IDS = {
+  'academic-pro':  { annual: '303396659393', monthly: '303447504112' },
+  'academic-team': { annual: '303387271358', monthly: '303447504114' },
+  'professional':  { annual: '303649001666', monthly: '303649001669' },
+};
+
+// Mollie payment method → HubSpot enum mapping
+const PAYMENT_METHOD_MAP = {
+  ideal: 'ideal',
+  creditcard: 'card',
+  banktransfer: 'sepa_direct_debit',
+  directdebit: 'sepa_direct_debit',
+  paypal: 'paypal',
+  applepay: 'apple_pay',
+  googlepay: 'google_pay',
+  paybybank: 'pay_by_bank',
+};
+
+// Email Octopus — direct API integration (replaces Zapier middleman)
+const EMAILOCTOPUS_API_KEY = process.env.EMAILOCTOPUS_API_KEY || '';
+const OCTOPUS_LIST_PAID = process.env.OCTOPUS_LIST_PAID || '';
+const OCTOPUS_LIST_FAILED = process.env.OCTOPUS_LIST_FAILED || '';
+const OCTOPUS_AUTOMATION_PAID = process.env.OCTOPUS_AUTOMATION_PAID || '';
+const OCTOPUS_AUTOMATION_FAILED = process.env.OCTOPUS_AUTOMATION_FAILED || '';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main Handler
+// ─────────────────────────────────────────────────────────────────────────────
 
 module.exports = async function handler(req, res) {
   // Mollie expects 200 OK — if we return anything else, it retries
@@ -91,37 +133,244 @@ module.exports = async function handler(req, res) {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Invoice Number Generation
+// Helper Functions
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function generateInvoiceNumber() {
-  // Read current counter from the Euretos company record, increment, write back
-  // Format: DA-YYYY-NNNN (e.g., DA-2026-0001)
-  if (!EURETOS_COMPANY_ID) {
-    console.warn('EURETOS_COMPANY_ID not set — skipping invoice number generation');
+// Calculate platform expiration date based on billing interval
+// Cerebrum checks this date to grant/deny access
+// Monthly gets a few days buffer beyond next payment due date
+// If recurring payment fails, admin can manually extend ~1 month in HubSpot
+function calculateExpirationDate(interval) {
+  const d = new Date();
+  if (interval === 'annual') {
+    d.setFullYear(d.getFullYear() + 1);
+  } else {
+    d.setDate(d.getDate() + 35); // ~1 month + buffer
+  }
+  return d.toISOString().split('T')[0]; // YYYY-MM-DD
+}
+
+// Human-readable subscription period for invoice custom field
+function getSubscriptionPeriod(interval) {
+  const start = new Date();
+  const end = new Date();
+  if (interval === 'annual') {
+    end.setFullYear(end.getFullYear() + 1);
+  } else {
+    end.setMonth(end.getMonth() + 1);
+  }
+  const fmt = (d) => d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
+  return `${fmt(start)} – ${fmt(end)}`;
+}
+
+// EU VAT compliance note for invoice
+function getVatNote(vatTreatment) {
+  if (vatTreatment === 'reverse_charge') return 'Reverse Charge — Article 196 EU VAT Directive';
+  if (vatTreatment === 'export') return 'Export — 0% VAT';
+  return ''; // standard VAT — rate shown in line items
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HubSpot Invoice Creation
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Creates a HubSpot invoice, associates with contact + line item, sets to open.
+// HubSpot auto-assigns the invoice number (DA-2026-NNNN) based on portal settings.
+// Returns { invoiceId, invoiceNumber, invoiceLink } or null on failure.
+async function createHubSpotInvoice(payment, metadata, contactId) {
+  const { plan, interval, vatTreatment, currency } = metadata;
+  const today = new Date().toISOString().split('T')[0];
+  const dueDate = new Date();
+  dueDate.setDate(dueDate.getDate() + 30);
+
+  try {
+    // Step 1: Create draft invoice
+    const invoiceRes = await hubspotClient.apiRequest({
+      method: 'POST',
+      path: '/crm/v3/objects/invoices',
+      body: {
+        properties: {
+          hs_currency: currency || 'EUR',
+          hs_invoice_date: today,
+          hs_due_date: dueDate.toISOString().split('T')[0],
+          hs_invoice_status: 'draft',
+          customer_vat_id: metadata.vatId || '',
+          vat_note: getVatNote(vatTreatment),
+          subscription_period: getSubscriptionPeriod(interval),
+        },
+      },
+    });
+
+    const invoiceData = await invoiceRes.json();
+    const invoiceId = invoiceData.id;
+    if (!invoiceId) {
+      console.error('HubSpot invoice creation returned no ID:', invoiceData);
+      return null;
+    }
+
+    // Step 2: Associate invoice with contact
+    await hubspotClient.apiRequest({
+      method: 'PUT',
+      path: `/crm/v4/objects/invoices/${invoiceId}/associations/default/contacts/${contactId}`,
+    });
+
+    // Step 3: Create line item from product catalog and associate with invoice
+    const productId = PRODUCT_IDS[plan]?.[interval];
+    if (productId) {
+      const lineItemRes = await hubspotClient.apiRequest({
+        method: 'POST',
+        path: '/crm/v3/objects/line_items',
+        body: {
+          properties: {
+            hs_product_id: productId,
+            quantity: '1',
+          },
+        },
+      });
+      const lineItemData = await lineItemRes.json();
+
+      if (lineItemData.id) {
+        await hubspotClient.apiRequest({
+          method: 'PUT',
+          path: `/crm/v4/objects/invoices/${invoiceId}/associations/default/line_items/${lineItemData.id}`,
+        });
+      }
+    } else {
+      console.warn(`No product ID found for ${plan}/${interval}/${currency} — invoice has no line items`);
+    }
+
+    // Step 4: Move invoice to open (HubSpot generates the hosted URL)
+    await hubspotClient.apiRequest({
+      method: 'PATCH',
+      path: `/crm/v3/objects/invoices/${invoiceId}`,
+      body: {
+        properties: { hs_invoice_status: 'open' },
+      },
+    });
+
+    // Step 5: Read back to get auto-assigned invoice number and link
+    const readRes = await hubspotClient.apiRequest({
+      method: 'GET',
+      path: `/crm/v3/objects/invoices/${invoiceId}?properties=hs_invoice_link,hs_number`,
+    });
+    const readData = await readRes.json();
+
+    const invoiceNumber = readData.properties?.hs_number || '';
+    const invoiceLink = readData.properties?.hs_invoice_link || '';
+
+    console.log(`Invoice created: ${invoiceNumber} (ID ${invoiceId}), link: ${invoiceLink}`);
+    return { invoiceId, invoiceNumber, invoiceLink };
+
+  } catch (err) {
+    console.error('Failed to create HubSpot invoice:', err.message);
     return null;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Email Octopus — Direct API Integration
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Adds a contact to an Email Octopus list and triggers an automation.
+// The automation must have "Started via API" trigger type in Email Octopus.
+async function triggerEmailOctopus(listId, automationId, email, fields) {
+  if (!EMAILOCTOPUS_API_KEY || !listId) {
+    console.warn('Email Octopus not configured — skipping email trigger');
+    return;
   }
 
   try {
-    const company = await hubspotClient.crm.companies.basicApi.getById(
-      EURETOS_COMPANY_ID,
-      ['last_invoice_number']
-    );
-
-    const lastNumber = parseInt(company.properties.last_invoice_number || '0', 10);
-    const nextNumber = lastNumber + 1;
-    const year = new Date().getFullYear();
-    const invoiceNumber = `DA-${year}-${String(nextNumber).padStart(4, '0')}`;
-
-    // Write incremented counter back to company record
-    await hubspotClient.crm.companies.basicApi.update(EURETOS_COMPANY_ID, {
-      properties: { last_invoice_number: String(nextNumber) },
+    // Step 1: Add/update contact on list with custom fields
+    const contactRes = await fetch(`https://emailoctopus.com/api/1.6/lists/${listId}/contacts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        api_key: EMAILOCTOPUS_API_KEY,
+        email_address: email,
+        fields: fields,
+        status: 'SUBSCRIBED',
+      }),
     });
 
-    console.log(`Invoice number generated: ${invoiceNumber} (counter: ${nextNumber})`);
-    return invoiceNumber;
+    const contactData = await contactRes.json();
+    const memberId = contactData.id;
+
+    if (!memberId) {
+      // Contact may already exist — try to find by email
+      console.warn('Email Octopus: could not create contact, may already exist:', contactData);
+      return;
+    }
+
+    // Step 2: Trigger the automation for this contact
+    if (automationId) {
+      const autoRes = await fetch(`https://emailoctopus.com/api/1.6/automations/${automationId}/queue`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          api_key: EMAILOCTOPUS_API_KEY,
+          list_member_id: memberId,
+        }),
+      });
+      const autoData = await autoRes.json();
+      console.log(`Email Octopus: automation ${automationId} triggered for ${email}`, autoData);
+    }
+
   } catch (err) {
-    console.error('Failed to generate invoice number:', err.message);
+    console.error('Email Octopus error:', err.message);
+    // Non-blocking — payment processing continues even if email fails
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Platform Access — Set Cerebrum Properties
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Sets the legacy properties that Cerebrum reads for access control:
+// subscription_type, subscription_status, expiration_date
+// Returns { isNewUser, contactEmail, contactFirstName } for email trigger
+async function setPlatformAccess(contactId, plan, interval) {
+  const subscriptionType = PLAN_TO_SUBSCRIPTION_TYPE[plan] || 'Academic';
+  const expirationDate = calculateExpirationDate(interval);
+
+  try {
+    // Read current contact to check if new user
+    const contact = await hubspotClient.crm.contacts.basicApi.getById(
+      contactId,
+      ['subscription_status', 'email', 'firstname']
+    );
+
+    const currentStatus = contact.properties.subscription_status;
+    const isNewUser = !currentStatus || currentStatus === 'None' || currentStatus === '';
+
+    const platformProps = {
+      subscription_type: subscriptionType,
+      expiration_date: expirationDate,
+    };
+
+    if (isNewUser) {
+      // New user: Enrollment triggers Cerebrum to create account
+      // Cerebrum sends back USER_REGISTERED with activation link
+      // Existing enrollment workflow handles the password-setup email
+      platformProps.subscription_status = 'Enrollment';
+    } else {
+      // Existing user: just update type and expiration
+      platformProps.subscription_status = 'Active';
+    }
+
+    await hubspotClient.crm.contacts.basicApi.update(contactId, {
+      properties: platformProps,
+    });
+
+    console.log(`Platform access: type=${subscriptionType}, status=${platformProps.subscription_status}, expires=${expirationDate}`);
+
+    return {
+      isNewUser,
+      contactEmail: contact.properties.email || '',
+      contactFirstName: contact.properties.firstname || '',
+    };
+
+  } catch (err) {
+    console.error(`Failed to set platform access for contact ${contactId}:`, err.message);
     return null;
   }
 }
@@ -131,72 +380,90 @@ async function generateInvoiceNumber() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function handlePaid(payment, metadata) {
-  const { dealId, contactId, plan, interval } = metadata;
+  const { dealId, contactId, plan, interval, vatTreatment, currency } = metadata;
   const isRecurring = payment.sequenceType === 'recurring';
   const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
 
   if (isRecurring) {
     // ── Recurring payment (subscription charge) ──
-    // Update contact tracking properties — HubSpot WF2 sends receipt email
     console.log(`Recurring payment ${payment.id} paid for deal ${dealId}`);
 
-    // Generate invoice number for the renewal
-    const invoiceNumber = await generateInvoiceNumber();
+    // Extend platform expiration
+    const expirationDate = calculateExpirationDate(interval);
 
     try {
-      const contactProps = {
-        last_subscription_payment_date: today,
-        last_mollie_payment_id: payment.id,
-        needs_payment_retry: 'false',
-      };
-      if (invoiceNumber) contactProps.last_invoice_number = invoiceNumber;
-
       await hubspotClient.crm.contacts.basicApi.update(contactId, {
-        properties: contactProps,
+        properties: {
+          last_subscription_payment_date: today,
+          last_mollie_payment_id: payment.id,
+          needs_payment_retry: 'false',
+          expiration_date: expirationDate,
+        },
       });
     } catch (err) {
       console.error(`Failed to update contact ${contactId} for recurring payment:`, err.message);
+    }
+
+    // Create renewal invoice
+    const invoiceResult = await createHubSpotInvoice(payment, metadata, contactId);
+    if (invoiceResult) {
+      console.log(`Renewal invoice: ${invoiceResult.invoiceNumber}`);
     }
 
   } else {
     // ── First payment (initial checkout) ──
     console.log(`First payment ${payment.id} paid for deal ${dealId}`);
 
-    // Map Mollie payment method to HubSpot enum value
-    // Map Mollie method names to HubSpot deal_payment_method enum values
-    // HubSpot enum: card, ideal, sepa_direct_debit, paypal, apple_pay, google_pay, pay_by_bank, other
-    const methodMap = {
-      ideal: 'ideal',
-      creditcard: 'card',
-      banktransfer: 'sepa_direct_debit',
-      directdebit: 'sepa_direct_debit',
-      paypal: 'paypal',
-      applepay: 'apple_pay',
-      googlepay: 'google_pay',
-      paybybank: 'pay_by_bank',
-    };
-    const paymentMethod = methodMap[payment.method] || 'other';
+    const paymentMethod = PAYMENT_METHOD_MAP[payment.method] || 'other';
 
-    // Generate invoice number
-    const invoiceNumber = await generateInvoiceNumber();
-
-    // Update deal: mark as paid + set invoice number
+    // Update deal: mark as paid
     try {
-      const dealProps = {
-        payment_status: 'paid',
-        initial_payment_date: today,
-        deal_payment_method: paymentMethod,
-      };
-      if (invoiceNumber) dealProps.invoice_number = invoiceNumber;
-
       await hubspotClient.crm.deals.basicApi.update(dealId, {
-        properties: dealProps,
+        properties: {
+          payment_status: 'paid',
+          initial_payment_date: today,
+          deal_payment_method: paymentMethod,
+        },
       });
     } catch (err) {
       console.error(`Failed to update deal ${dealId}:`, err.message);
     }
 
-    // For subscriptions: create Mollie subscription for recurring charges
+    // Create HubSpot invoice (auto-numbered DA-2026-NNNN)
+    const invoiceResult = await createHubSpotInvoice(payment, metadata, contactId);
+
+    // Store invoice number + link on deal (for WF1 email template)
+    if (invoiceResult) {
+      try {
+        await hubspotClient.crm.deals.basicApi.update(dealId, {
+          properties: {
+            invoice_number: invoiceResult.invoiceNumber,
+            invoice_link: invoiceResult.invoiceLink,
+          },
+        });
+      } catch (err) {
+        console.error(`Failed to store invoice link on deal ${dealId}:`, err.message);
+      }
+    }
+
+    // Set platform access (subscription_type, subscription_status, expiration_date)
+    const accessResult = await setPlatformAccess(contactId, plan, interval);
+
+    // Trigger confirmation email via Email Octopus
+    if (accessResult) {
+      await triggerEmailOctopus(OCTOPUS_LIST_PAID, OCTOPUS_AUTOMATION_PAID, accessResult.contactEmail, {
+        FirstName: accessResult.contactFirstName,
+        Plan: plan,
+        Interval: interval,
+        Amount: payment.amount?.value || '',
+        Currency: payment.amount?.currency || 'EUR',
+        InvoiceNumber: invoiceResult?.invoiceNumber || '',
+        InvoiceLink: invoiceResult?.invoiceLink || '',
+        IsNewUser: accessResult.isNewUser ? 'yes' : 'no',
+      });
+    }
+
+    // Create Mollie subscription for recurring charges
     const isSubscription = interval === 'monthly' || interval === 'annual';
 
     if (isSubscription && payment.mandateId) {
@@ -261,13 +528,11 @@ async function createSubscription(payment, metadata) {
 
   } catch (err) {
     console.error(`Failed to create subscription for deal ${dealId}:`, err.message);
-    // The payment succeeded even though subscription creation failed.
-    // Mark deal as paid but flag for manual follow-up.
+    // Payment succeeded but subscription creation failed — flag for manual follow-up
     await hubspotClient.crm.deals.basicApi.update(dealId, {
       properties: {
         payment_status: 'paid',
         dealstage: STAGES.CLOSED_WON_SUBSCRIPTION,
-        // Subscription creation will need manual intervention
       },
     }).catch(e => console.error('Failed to update deal after subscription error:', e.message));
   }
@@ -278,7 +543,7 @@ async function createSubscription(payment, metadata) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function handleFailed(payment, metadata) {
-  const { dealId, contactId, interval } = metadata;
+  const { dealId, contactId, plan } = metadata;
   const isRecurring = payment.sequenceType === 'recurring';
 
   console.log(`Payment ${payment.id} ${payment.status} for deal ${dealId} (recurring: ${isRecurring})`);
@@ -298,16 +563,30 @@ async function handleFailed(payment, metadata) {
     }
   } else {
     // ── Failed first payment ──
-    // Move deal to Lost stage — HubSpot WF1 sends failure email
+    // Move deal to Lost stage
     try {
       await hubspotClient.crm.deals.basicApi.update(dealId, {
         properties: {
-          payment_status: payment.status, // "failed", "canceled", "expired" — matches HubSpot enum
+          payment_status: payment.status, // "failed", "canceled", "expired"
           dealstage: STAGES.LOST_PAYMENT_FAILED,
         },
       });
     } catch (err) {
       console.error(`Failed to update deal ${dealId} to lost:`, err.message);
+    }
+
+    // Trigger failure email via Email Octopus
+    try {
+      const contact = await hubspotClient.crm.contacts.basicApi.getById(
+        contactId,
+        ['email', 'firstname']
+      );
+      await triggerEmailOctopus(OCTOPUS_LIST_FAILED, OCTOPUS_AUTOMATION_FAILED, contact.properties.email, {
+        FirstName: contact.properties.firstname || '',
+        Plan: plan || '',
+      });
+    } catch (err) {
+      console.error(`Failed to trigger failure email for contact ${contactId}:`, err.message);
     }
   }
 }
