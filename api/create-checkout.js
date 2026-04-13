@@ -283,6 +283,8 @@ module.exports = async function handler(req, res) {
           interval,
           vatTreatment,
           currency,
+          vatId: vatId ? vatId.trim() : '',
+          country: countryUpper,
         },
       };
 
