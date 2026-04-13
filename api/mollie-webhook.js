@@ -45,8 +45,22 @@ const PLAN_TO_SUBSCRIPTION_TYPE = {
   'professional': 'Corporate',
 };
 
-// HubSpot product IDs for invoice line items
-// Each product has both EUR and USD pricing — HubSpot uses the invoice currency to pick the right price
+// Server-side price table (must match create-checkout.js)
+const PRICE_TABLE = {
+  'academic-pro':  { monthly: { EUR: '135.00', USD: '150.00' }, annual: { EUR: '1200.00', USD: '1320.00' } },
+  'academic-team': { monthly: { EUR: '270.00', USD: '300.00' }, annual: { EUR: '2400.00', USD: '2640.00' } },
+  'professional':  { monthly: { EUR: '400.00', USD: '440.00' }, annual: { EUR: '3600.00', USD: '3960.00' } },
+};
+
+// Human-readable plan labels for invoice line items
+const PLAN_LABELS = {
+  'academic-pro': 'Academic Pro',
+  'academic-team': 'Academic Team',
+  'professional': 'Professional',
+};
+
+// HubSpot product IDs (kept for reference — not used for invoice line items
+// because HubSpot products with recurring billing frequency block invoice finalization)
 const PRODUCT_IDS = {
   'academic-pro':  { annual: '303396659393', monthly: '303447504112' },
   'academic-team': { annual: '303387271358', monthly: '303447504114' },
@@ -242,16 +256,24 @@ async function createHubSpotInvoice(payment, metadata, contactId) {
       }
     }
 
-    // Step 3: Create line item from product catalog and associate with invoice
-    const productId = PRODUCT_IDS[plan]?.[interval];
-    if (productId) {
+    // Step 3: Create line item with explicit properties (not from product catalog)
+    // HubSpot products are configured as recurring, which blocks invoice finalization.
+    // Instead, create a one-time line item with explicit name, price, and quantity.
+    const unitPrice = PRICE_TABLE[plan]?.[interval]?.[currency || 'EUR'];
+    const planLabel = PLAN_LABELS[plan] || plan;
+    const intervalLabel = interval === 'annual' ? 'Annual' : 'Monthly';
+
+    if (unitPrice) {
       const lineItemRes = await hubspotClient.apiRequest({
         method: 'POST',
         path: '/crm/v3/objects/line_items',
         body: {
           properties: {
-            hs_product_id: productId,
+            name: `Disease Atlas ${planLabel} — ${intervalLabel} subscription`,
+            hs_sku: `DA-${plan}-${interval}`,
             quantity: '1',
+            price: unitPrice,
+            amount: unitPrice,
           },
         },
       });
@@ -262,9 +284,11 @@ async function createHubSpotInvoice(payment, metadata, contactId) {
           method: 'PUT',
           path: `/crm/v4/objects/invoices/${invoiceId}/associations/default/line_items/${lineItemData.id}`,
         });
+      } else {
+        console.warn('Line item creation returned no ID:', lineItemData);
       }
     } else {
-      console.warn(`No product ID found for ${plan}/${interval}/${currency} — invoice has no line items`);
+      console.warn(`No price found for ${plan}/${interval}/${currency} — invoice has no line items`);
     }
 
     // Step 4: Move invoice from draft to open (finalize)
