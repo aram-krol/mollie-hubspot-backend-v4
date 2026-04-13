@@ -276,7 +276,7 @@ async function createHubSpotInvoice(payment, metadata, contactId) {
 
       // Add tax if applicable (standard VAT — not reverse charge or export)
       if (vatRateNum > 0 && vatTreatment === 'standard') {
-        lineItemProps.tax = vatAmountNum.toFixed(2);
+        lineItemProps.hs_tax_amount = vatAmountNum.toFixed(2);
       }
 
       const lineItemRes = await hubspotClient.apiRequest({
