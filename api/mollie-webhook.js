@@ -267,22 +267,18 @@ async function createHubSpotInvoice(payment, metadata, contactId) {
     const vatAmountNum = parseFloat(metadata.vatAmount) || 0;
 
     if (unitPrice) {
-      const lineItemProps = {
-        name: `Disease Atlas ${planLabel} — ${intervalLabel} subscription`,
-        hs_sku: `DA-${plan}-${interval}`,
-        quantity: '1',
-        price: unitPrice,
-      };
-
-      // Add tax if applicable (standard VAT — not reverse charge or export)
-      if (vatRateNum > 0 && vatTreatment === 'standard') {
-        lineItemProps.hs_tax_amount = vatAmountNum.toFixed(2);
-      }
-
+      // Line item 1: Subscription
       const lineItemRes = await hubspotClient.apiRequest({
         method: 'POST',
         path: '/crm/v3/objects/line_items',
-        body: { properties: lineItemProps },
+        body: {
+          properties: {
+            name: `Disease Atlas ${planLabel} — ${intervalLabel} subscription`,
+            hs_sku: `DA-${plan}-${interval}`,
+            quantity: '1',
+            price: unitPrice,
+          },
+        },
       });
       const lineItemData = await lineItemRes.json();
 
@@ -293,6 +289,29 @@ async function createHubSpotInvoice(payment, metadata, contactId) {
         });
       } else {
         console.warn('Line item creation returned no ID:', lineItemData);
+      }
+
+      // Line item 2: VAT (only for standard VAT — not reverse charge or export)
+      if (vatRateNum > 0 && vatTreatment === 'standard') {
+        const vatLineRes = await hubspotClient.apiRequest({
+          method: 'POST',
+          path: '/crm/v3/objects/line_items',
+          body: {
+            properties: {
+              name: `VAT ${vatRateNum}%`,
+              quantity: '1',
+              price: vatAmountNum.toFixed(2),
+            },
+          },
+        });
+        const vatLineData = await vatLineRes.json();
+
+        if (vatLineData.id) {
+          await hubspotClient.apiRequest({
+            method: 'PUT',
+            path: `/crm/v4/objects/invoices/${invoiceId}/associations/default/line_items/${vatLineData.id}`,
+          });
+        }
       }
     } else {
       console.warn(`No price found for ${plan}/${interval}/${currency} — invoice has no line items`);
