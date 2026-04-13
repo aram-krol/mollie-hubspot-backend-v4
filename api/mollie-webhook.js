@@ -213,20 +213,42 @@ async function createHubSpotInvoice(payment, metadata, contactId) {
 
   try {
     // Step 1: Create draft invoice
+    // Fetch contact details for recipient info on invoice
+    let contactName = '';
+    let contactCompany = '';
+    let contactCountry = metadata.country || '';
+    try {
+      const contactInfo = await hubspotClient.crm.contacts.basicApi.getById(
+        contactId, ['firstname', 'lastname', 'company']
+      );
+      const fn = contactInfo.properties.firstname || '';
+      const ln = contactInfo.properties.lastname || '';
+      contactName = `${fn} ${ln}`.trim();
+      contactCompany = contactInfo.properties.company || '';
+    } catch (err) {
+      console.warn('Could not fetch contact info for invoice:', err.message);
+    }
+
+    const invoiceProps = {
+      hs_currency: currency || 'EUR',
+      hs_invoice_date: today,
+      hs_due_date: dueDate.toISOString().split('T')[0],
+      hs_invoice_status: 'draft',
+      customer_vat_id: metadata.vatId || '',
+      vat_note: getVatNote(vatTreatment),
+      subscription_period: getSubscriptionPeriod(interval),
+      hs_recipient_company_country_code: contactCountry,
+    };
+
+    // Add company name and VAT ID to recipient if available
+    if (contactCompany) {
+      invoiceProps.hs_recipient_company_name = contactCompany;
+    }
+
     const invoiceRes = await hubspotClient.apiRequest({
       method: 'POST',
       path: '/crm/v3/objects/invoices',
-      body: {
-        properties: {
-          hs_currency: currency || 'EUR',
-          hs_invoice_date: today,
-          hs_due_date: dueDate.toISOString().split('T')[0],
-          hs_invoice_status: 'draft',
-          customer_vat_id: metadata.vatId || '',
-          vat_note: getVatNote(vatTreatment),
-          subscription_period: getSubscriptionPeriod(interval),
-        },
-      },
+      body: { properties: invoiceProps },
     });
 
     const invoiceData = await invoiceRes.json();
