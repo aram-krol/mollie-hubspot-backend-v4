@@ -232,17 +232,20 @@ module.exports = async function handler(req, res) {
         },
       });
       dealId = deal.id;
-
-      // Associate deal with contact
-      await hubspotClient.crm.deals.associationsApi.create(
-        dealId,
-        'contacts',
-        contactId,
-        [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 3 }]
-      );
     } catch (err) {
       console.error('HubSpot deal error:', err.message);
       return res.status(500).json({ error: 'Failed to create order. Please try again.' });
+    }
+
+    // Associate deal with contact (separate try-catch — don't block checkout if this fails)
+    try {
+      await hubspotClient.apiRequest({
+        method: 'PUT',
+        path: `/crm/v4/objects/deals/${dealId}/associations/default/contacts/${contactId}`,
+      });
+    } catch (err) {
+      console.error(`Failed to associate deal ${dealId} with contact ${contactId}:`, err.message);
+      // Non-blocking — deal is created, payment can still proceed
     }
 
     // ── Step 3: Create Mollie customer (needed for subscriptions) ──
