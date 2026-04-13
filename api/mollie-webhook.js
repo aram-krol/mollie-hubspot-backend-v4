@@ -743,6 +743,10 @@ async function createSubscription(payment, metadata) {
     });
 
     // Update contact with subscription tracking properties
+    // NOTE: billing_vat_id is intentionally excluded here — it's already set during
+    // checkout (create-checkout.js) and has a uniqueness constraint in HubSpot.
+    // Including it here causes the entire update to fail when multiple contacts
+    // share the same VAT ID (e.g. same-company users).
     await hubspotClient.crm.contacts.basicApi.update(contactId, {
       properties: {
         billing_subscription_active: 'true',
@@ -752,13 +756,23 @@ async function createSubscription(payment, metadata) {
         mollie_subscription_id: subscription.id,
         billing_start_date: new Date().toISOString(),
         billing_country: payment.metadata.country || '',
-        billing_vat_id: payment.metadata.vatId || '',
         billing_vat_treatment: payment.metadata.vatTreatment || '',
         next_subscription_payment: subscription.nextPaymentDate || '',
         last_subscription_payment_date: new Date().toISOString().split('T')[0],
         last_mollie_payment_id: payment.id,
       },
     });
+
+    // Try to set billing_vat_id separately — non-blocking if uniqueness constraint fails
+    if (payment.metadata.vatId) {
+      try {
+        await hubspotClient.crm.contacts.basicApi.update(contactId, {
+          properties: { billing_vat_id: payment.metadata.vatId },
+        });
+      } catch (vatErr) {
+        console.warn(`Could not set billing_vat_id on contact ${contactId} (likely uniqueness constraint):`, vatErr.message);
+      }
+    }
 
   } catch (err) {
     console.error(`Failed to create subscription for deal ${dealId}:`, err.message);
