@@ -238,12 +238,9 @@ async function createHubSpotInvoice(payment, metadata, contactId) {
       vat_note: getVatNote(vatTreatment),
       subscription_period: getSubscriptionPeriod(interval),
       hs_recipient_company_country_code: contactCountry,
+      hs_recipient_company_country: contactCountry,
+      hs_external_recipient: contactCompany || contactName,
     };
-
-    // Add company name and VAT ID to recipient if available
-    if (contactCompany) {
-      invoiceProps.hs_recipient_company_name = contactCompany;
-    }
 
     const invoiceRes = await hubspotClient.apiRequest({
       method: 'POST',
