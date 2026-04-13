@@ -267,24 +267,34 @@ async function createHubSpotInvoice(payment, metadata, contactId) {
       console.warn(`No product ID found for ${plan}/${interval}/${currency} — invoice has no line items`);
     }
 
-    // Step 4: Move invoice to open (HubSpot generates the hosted URL)
-    await hubspotClient.apiRequest({
+    // Step 4: Move invoice from draft to open (finalize)
+    // HubSpot assigns a sequential number and publishes the hosted URL on finalization.
+    // If this fails (e.g., missing sender info), the invoice stays in draft.
+    const finalizeRes = await hubspotClient.apiRequest({
       method: 'PATCH',
       path: `/crm/v3/objects/invoices/${invoiceId}`,
       body: {
         properties: { hs_invoice_status: 'open' },
       },
     });
+    const finalizeData = await finalizeRes.json();
+    if (finalizeData.properties?.hs_invoice_status !== 'open') {
+      console.warn(`Invoice ${invoiceId} finalization may have failed. Status: ${finalizeData.properties?.hs_invoice_status}`, JSON.stringify(finalizeData));
+    }
 
     // Step 5: Read back to get auto-assigned invoice number and link
     const readRes = await hubspotClient.apiRequest({
       method: 'GET',
-      path: `/crm/v3/objects/invoices/${invoiceId}?properties=hs_invoice_link,hs_number`,
+      path: `/crm/v3/objects/invoices/${invoiceId}?properties=hs_invoice_link,hs_number,hs_invoice_status`,
     });
     const readData = await readRes.json();
 
     const invoiceNumber = readData.properties?.hs_number || '';
     const invoiceLink = readData.properties?.hs_invoice_link || '';
+    const invoiceStatus = readData.properties?.hs_invoice_status || '';
+    if (invoiceStatus !== 'open') {
+      console.warn(`Invoice ${invoiceId} is still "${invoiceStatus}" after finalization attempt. Number: ${invoiceNumber}, Link: ${invoiceLink}`);
+    }
 
     console.log(`Invoice created: ${invoiceNumber} (ID ${invoiceId}), link: ${invoiceLink}`);
     return { invoiceId, invoiceNumber, invoiceLink };
