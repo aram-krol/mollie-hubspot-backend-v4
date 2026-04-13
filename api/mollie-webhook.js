@@ -668,7 +668,7 @@ async function createSubscription(payment, metadata) {
       properties: {
         billing_subscription_active: 'true',
         billing_subscription_status: 'active',
-        billing_subscription_plan: plan,
+        billing_subscription_plan: plan.replace(/-/g, '_'),
         billing_subscription_interval: interval,
         mollie_subscription_id: subscription.id,
         billing_start_date: new Date().toISOString(),
