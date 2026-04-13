@@ -288,6 +288,9 @@ module.exports = async function handler(req, res) {
           currency,
           vatId: vatId ? vatId.trim() : '',
           country: countryUpper,
+          vatRate: String(vatRate),
+          vatAmount: vatAmount.toFixed(2),
+          priceExVat: priceExVat.toFixed(2),
         },
       };
 

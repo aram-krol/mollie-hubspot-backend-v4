@@ -259,23 +259,30 @@ async function createHubSpotInvoice(payment, metadata, contactId) {
     // Step 3: Create line item with explicit properties (not from product catalog)
     // HubSpot products are configured as recurring, which blocks invoice finalization.
     // Instead, create a one-time line item with explicit name, price, and quantity.
+    // VAT is added via hs_tax to show the correct total on the invoice.
     const unitPrice = PRICE_TABLE[plan]?.[interval]?.[currency || 'EUR'];
     const planLabel = PLAN_LABELS[plan] || plan;
     const intervalLabel = interval === 'annual' ? 'Annual' : 'Monthly';
+    const vatRateNum = parseFloat(metadata.vatRate) || 0;
+    const vatAmountNum = parseFloat(metadata.vatAmount) || 0;
 
     if (unitPrice) {
+      const lineItemProps = {
+        name: `Disease Atlas ${planLabel} — ${intervalLabel} subscription`,
+        hs_sku: `DA-${plan}-${interval}`,
+        quantity: '1',
+        price: unitPrice,
+      };
+
+      // Add tax if applicable (standard VAT — not reverse charge or export)
+      if (vatRateNum > 0 && vatTreatment === 'standard') {
+        lineItemProps.tax = vatAmountNum.toFixed(2);
+      }
+
       const lineItemRes = await hubspotClient.apiRequest({
         method: 'POST',
         path: '/crm/v3/objects/line_items',
-        body: {
-          properties: {
-            name: `Disease Atlas ${planLabel} — ${intervalLabel} subscription`,
-            hs_sku: `DA-${plan}-${interval}`,
-            quantity: '1',
-            price: unitPrice,
-            amount: unitPrice,
-          },
-        },
+        body: { properties: lineItemProps },
       });
       const lineItemData = await lineItemRes.json();
 
