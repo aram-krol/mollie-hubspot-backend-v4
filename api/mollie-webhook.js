@@ -353,7 +353,29 @@ async function createHubSpotInvoice(payment, metadata, contactId) {
       console.warn(`Invoice ${invoiceId} finalization may have failed. Status: ${finalizeData.properties?.hs_invoice_status}`, JSON.stringify(finalizeData));
     }
 
-    // Step 5: Read back to get auto-assigned invoice number and link
+    // Step 5: Mark invoice as paid
+    // Mollie has already processed the payment — the invoice status should reflect that.
+    // HubSpot doesn't support recording external payment records via API, but we can
+    // PATCH the status to "paid" so the invoice view shows the correct state.
+    // NOTE: this only fires after a successful finalization (open). If finalization
+    // failed, we skip marking paid so the draft can be fixed manually.
+    try {
+      const paidRes = await hubspotClient.apiRequest({
+        method: 'PATCH',
+        path: `/crm/v3/objects/invoices/${invoiceId}`,
+        body: {
+          properties: { hs_invoice_status: 'paid' },
+        },
+      });
+      const paidData = await paidRes.json();
+      if (paidData.properties?.hs_invoice_status !== 'paid') {
+        console.warn(`Invoice ${invoiceId} could not be marked paid. Response:`, JSON.stringify(paidData));
+      }
+    } catch (err) {
+      console.warn(`Failed to mark invoice ${invoiceId} as paid:`, err.message);
+    }
+
+    // Step 6: Read back to get auto-assigned invoice number and link
     const readRes = await hubspotClient.apiRequest({
       method: 'GET',
       path: `/crm/v3/objects/invoices/${invoiceId}?properties=hs_invoice_link,hs_number,hs_invoice_status`,
@@ -363,11 +385,11 @@ async function createHubSpotInvoice(payment, metadata, contactId) {
     const invoiceNumber = readData.properties?.hs_number || '';
     const invoiceLink = readData.properties?.hs_invoice_link || '';
     const invoiceStatus = readData.properties?.hs_invoice_status || '';
-    if (invoiceStatus !== 'open') {
-      console.warn(`Invoice ${invoiceId} is still "${invoiceStatus}" after finalization attempt. Number: ${invoiceNumber}, Link: ${invoiceLink}`);
+    if (invoiceStatus !== 'paid' && invoiceStatus !== 'open') {
+      console.warn(`Invoice ${invoiceId} is "${invoiceStatus}". Number: ${invoiceNumber}, Link: ${invoiceLink}`);
     }
 
-    console.log(`Invoice created: ${invoiceNumber} (ID ${invoiceId}), link: ${invoiceLink}`);
+    console.log(`Invoice created: ${invoiceNumber} (ID ${invoiceId}), status: ${invoiceStatus}, link: ${invoiceLink}`);
     return { invoiceId, invoiceNumber, invoiceLink };
 
   } catch (err) {
