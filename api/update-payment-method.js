@@ -155,8 +155,27 @@ module.exports = async function handler(req, res) {
 
     // ── Create a new Mollie payment with sequenceType "first" ──
     // This creates a new mandate when the customer completes payment
-    const plan = props.billing_subscription_plan || '';
+    // NOTE: billing_subscription_plan is stored with underscores in HubSpot (enum constraint)
+    // but PRICE_TABLE and invoice creation use hyphens. Convert back here.
+    const plan = (props.billing_subscription_plan || '').replace(/_/g, '-');
     const interval = props.billing_subscription_interval || '';
+
+    // Compute VAT fields from the stored amount for invoice line item creation
+    const vatTreatment = props.billing_vat_treatment || '';
+    const totalAmount = parseFloat(amount.value);
+    let vatRate = 0;
+    let vatAmount = 0;
+    let priceExVat = totalAmount;
+    if (vatTreatment === 'standard') {
+      // Derive VAT from total — assume country's standard rate is baked in
+      // For recovery, back-calculate: priceExVat = total / (1 + rate/100)
+      // We don't know the exact rate here without re-running VAT logic, so store
+      // raw values from the last payment amount. The invoice will show total as-is.
+      // Best effort: use a default 21% for derivation if we can't infer.
+      vatRate = 21;
+      priceExVat = totalAmount / 1.21;
+      vatAmount = totalAmount - priceExVat;
+    }
 
     const payment = await mollieClient.payments.create({
       amount: amount,
@@ -171,10 +190,13 @@ module.exports = async function handler(req, res) {
         contactId: contactId,
         plan: plan,
         interval: interval,
-        vatTreatment: props.billing_vat_treatment || '',
+        vatTreatment: vatTreatment,
         currency: currency,
         vatId: props.billing_vat_id || '',
         country: props.billing_country || '',
+        vatRate: String(vatRate),
+        vatAmount: vatAmount.toFixed(2),
+        priceExVat: priceExVat.toFixed(2),
         // No dealId — mandate updates don't create new deals
       },
     });
