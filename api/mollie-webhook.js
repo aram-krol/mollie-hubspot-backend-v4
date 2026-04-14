@@ -87,6 +87,8 @@ const OCTOPUS_AUTOMATION_PAID = process.env.OCTOPUS_AUTOMATION_PAID || '';
 const OCTOPUS_AUTOMATION_FAILED = process.env.OCTOPUS_AUTOMATION_FAILED || '';
 const OCTOPUS_LIST_RECURRING_FAILED = process.env.OCTOPUS_LIST_RECURRING_FAILED || '';
 const OCTOPUS_AUTOMATION_RECURRING_FAILED = process.env.OCTOPUS_AUTOMATION_RECURRING_FAILED || '';
+const OCTOPUS_LIST_RECOVERED = process.env.OCTOPUS_LIST_RECOVERED || '';
+const OCTOPUS_AUTOMATION_RECOVERED = process.env.OCTOPUS_AUTOMATION_RECOVERED || '';
 const OCTOPUS_LIST_INTERNAL = process.env.OCTOPUS_LIST_INTERNAL || '';
 const OCTOPUS_AUTOMATION_INTERNAL = process.env.OCTOPUS_AUTOMATION_INTERNAL || '';
 
@@ -1023,11 +1025,14 @@ async function handleMandateUpdate(payment, metadata) {
     console.log(`Recovery invoice: ${invoiceResult.invoiceNumber}`);
   }
 
-  // Step 4: Trigger confirmation email via Email Octopus (only if invoice ready)
+  // Step 4: Trigger recovery confirmation email via dedicated Email Octopus automation
+  // Uses OCTOPUS_LIST_RECOVERED / OCTOPUS_AUTOMATION_RECOVERED (not DA Payment Confirmed)
+  // to avoid the 24h cooldown conflict when a customer updates their payment method
+  // shortly after their initial payment.
   if (invoiceResult) {
     try {
       const contact = await hubspotClient.crm.contacts.basicApi.getById(contactId, ['email', 'firstname']);
-      await triggerEmailOctopus(OCTOPUS_LIST_PAID, OCTOPUS_AUTOMATION_PAID, contact.properties.email, {
+      await triggerEmailOctopus(OCTOPUS_LIST_RECOVERED, OCTOPUS_AUTOMATION_RECOVERED, contact.properties.email, {
         FirstName: contact.properties.firstname || '',
         Plan: plan || '',
         Interval: interval || '',
@@ -1035,10 +1040,9 @@ async function handleMandateUpdate(payment, metadata) {
         Currency: payment.amount?.currency || 'EUR',
         InvoiceNumber: invoiceResult.invoiceNumber,
         InvoiceLink: invoiceResult.invoiceLink,
-        IsNewUser: 'no',
       });
     } catch (err) {
-      console.error(`Failed to trigger confirmation email after mandate update:`, err.message);
+      console.error(`Failed to trigger recovery email after mandate update:`, err.message);
     }
   } else {
     console.warn(`Skipping recovery confirmation email for contact ${contactId}: no invoice created`);
