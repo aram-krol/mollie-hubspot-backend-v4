@@ -217,6 +217,7 @@ module.exports = async function handler(req, res) {
           dealname: `${PLAN_LABELS[plan]} ${interval} — ${email.toLowerCase()}`,
           pipeline: '2856169681',                         // SaaS Billing pipeline
           dealstage: STAGES.AWAITING_PAYMENT,
+          amount: totalAmount,                            // HubSpot standard deal amount — used by all reports
           billing_plan: PLAN_LABELS[plan],
           billing_interval: interval.charAt(0).toUpperCase() + interval.slice(1), // "Monthly" / "Annual"
           billing_country: countryUpper,
