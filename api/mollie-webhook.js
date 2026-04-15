@@ -781,6 +781,7 @@ async function createSubscription(payment, metadata) {
         billing_start_date: new Date().toISOString(),
         billing_country: payment.metadata.country || '',
         billing_vat_treatment: payment.metadata.vatTreatment || '',
+        cancel_subscription: 'No',  // Reset on new subscription — clears any prior cancellation flag
         next_subscription_payment: subscription.nextPaymentDate || '',
         last_subscription_payment_date: new Date().toISOString().split('T')[0],
         last_mollie_payment_id: payment.id,
