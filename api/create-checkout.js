@@ -278,7 +278,11 @@ module.exports = async function handler(req, res) {
       const paymentParams = {
         amount: { currency, value: totalAmount },
         description: `Disease Atlas — ${PLAN_LABELS[plan]} (${interval})`,
-        redirectUrl: `https://www.euretos.com/payment-complete?dealId=${dealId}`,
+        // Mollie sends the user here after checkout regardless of outcome
+        // (success or "Previous page" abandon). The /api/payment-redirect
+        // endpoint looks up the live Mollie status via the deal, then 302s
+        // to either /payment-complete or /payment-expired on www.euretos.com.
+        redirectUrl: `https://mollie-hubspot-backend-v4.vercel.app/api/payment-redirect?dealId=${dealId}`,
         webhookUrl: 'https://mollie-hubspot-backend-v4.vercel.app/api/mollie-webhook',
         metadata: {
           dealId,
