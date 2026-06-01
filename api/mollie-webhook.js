@@ -746,11 +746,25 @@ async function handlePaid(payment, metadata) {
 async function createSubscription(payment, metadata) {
   const { dealId, contactId, plan, interval } = metadata;
 
+  // The first payment we just collected covers the customer's first period.
+  // The recurring subscription must therefore start ONE FULL INTERVAL from now,
+  // not today. If startDate is omitted, Mollie fires the first recurring charge
+  // immediately, double-charging the customer minutes after signup.
+  // Bug surfaced 2026-06-01 during the live-mode smoke test.
+  const startDate = new Date();
+  if (interval === 'monthly') {
+    startDate.setMonth(startDate.getMonth() + 1);
+  } else if (interval === 'annual') {
+    startDate.setFullYear(startDate.getFullYear() + 1);
+  }
+  const startDateStr = startDate.toISOString().split('T')[0]; // YYYY-MM-DD
+
   try {
     const subscription = await mollieClient.customerSubscriptions.create({
       customerId: payment.customerId,
       amount: payment.amount,
       interval: SUBSCRIPTION_INTERVALS[interval],
+      startDate: startDateStr,
       description: `Disease Atlas — ${plan} subscription`,
       webhookUrl: 'https://mollie-hubspot-backend-v4.vercel.app/api/mollie-webhook',
       metadata: { dealId, contactId, plan, interval },
