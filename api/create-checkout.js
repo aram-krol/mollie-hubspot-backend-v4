@@ -47,6 +47,8 @@ const ALLOWED_ORIGINS = [
   'https://www.euretos.com',
   'https://euretos.com',
   'https://ask.euretos.com',
+  'https://dev.euretos.com',
+  'https://test.euretos.com',
 ];
 
 // HubSpot SaaS Billing pipeline stage IDs
